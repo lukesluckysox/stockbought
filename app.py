@@ -61,6 +61,16 @@ ALLOCATION_COLORS = [
     "#3b82f6", "#f97316", "#94a3b8",
 ]
 
+# ETF proxies for each allocation slice (used for sample return calc)
+ALLOCATION_ETFS = {
+    "US Stocks / Tech": "QQQ",
+    "Index Funds (S&P, Total Market)": "VTI",
+    "International / Emerging": "VWO",
+    "Bonds / Fixed Income": "BND",
+    "Crypto / Alternatives": "BITO",
+    "Cash / Money Market": None,  # assume 0% return for cash
+}
+
 DEFAULT_LOOKBACK_WEEKS = 12
 
 NYSE_TZ = zoneinfo.ZoneInfo("America/New_York")
@@ -328,6 +338,187 @@ def render_allocation_pie():
         f'font-size="10">Portfolio</text></svg></div>'
         f'<div style="flex:1;min-width:180px;">{legend}</div>'
         f'</div></div>',
+        unsafe_allow_html=True,
+    )
+
+
+# ============================================================
+# BUY / SELL SIGNALS
+# ============================================================
+
+def render_buy_sell_signals(df, weeks):
+    """Top 3 bullish = buy signals, top 3 bearish = sell signals."""
+    uni = df[df["ticker"].isin(UNIVERSE_TICKERS)].copy()
+    buys = uni.sort_values("sentiment", ascending=False).head(3)
+    sells = uni.sort_values("sentiment", ascending=True).head(3)
+
+    def _signal_card(row, signal_type):
+        ticker = row["ticker"]
+        ps = _format_price(row["price"])
+        chg = row["change_pct"]
+        score = row["sentiment"]
+        label = sentiment_label(score)
+        cc = "#22c55e" if chg >= 0 else "#ef4444"
+
+        if signal_type == "buy":
+            border = "#16a34a"
+            badge_bg = "#16a34a"
+            badge_text = "BUY SIGNAL"
+            icon = "\u25b2"
+        else:
+            border = "#dc2626"
+            badge_bg = "#dc2626"
+            badge_text = "SELL SIGNAL"
+            icon = "\u25bc"
+
+        return (
+            f'<div style="background:#0f172a;border:2px solid {border};border-radius:12px;'
+            f'padding:10px 14px;">'
+            f'<div style="display:flex;justify-content:space-between;align-items:center;'
+            f'margin-bottom:6px;">'
+            f'<span style="padding:2px 8px;border-radius:999px;background:{badge_bg};'
+            f'color:white;font-size:10px;font-weight:700;letter-spacing:0.5px;">'
+            f'{icon} {badge_text}</span>'
+            f'<span style="font-size:11px;color:#94a3b8;">{label}</span></div>'
+            f'<div style="display:flex;justify-content:space-between;align-items:center;">'
+            f'<div>'
+            f'<div style="font-weight:700;font-size:16px;">{ticker}</div>'
+            f'<div style="font-size:11px;color:#94a3b8;">{row["name"]}</div></div>'
+            f'<div style="text-align:right;">'
+            f'<div style="font-weight:700;font-size:16px;">{ps}</div>'
+            f'<div style="font-size:12px;color:{cc};font-weight:600;">'
+            f'{chg:+.2f}% ({weeks}W)</div>'
+            f'</div></div></div>'
+        )
+
+    buy_cards = ""
+    for _, r in buys.iterrows():
+        buy_cards += f'<div style="flex:1;min-width:180px;">{_signal_card(r, "buy")}</div>'
+
+    sell_cards = ""
+    for _, r in sells.iterrows():
+        sell_cards += f'<div style="flex:1;min-width:180px;">{_signal_card(r, "sell")}</div>'
+
+    st.markdown(
+        f'<div style="margin-bottom:16px;">'
+        f'<div style="display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap;">'
+        f'{buy_cards}</div>'
+        f'<div style="display:flex;gap:10px;flex-wrap:wrap;">'
+        f'{sell_cards}</div></div>',
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "\u26a0\ufe0f Signals are based solely on price momentum over the selected "
+        "lookback period. This is NOT financial advice."
+    )
+
+
+# ============================================================
+# SAMPLE $1,000 RETURN CALCULATOR
+# ============================================================
+
+@st.cache_data(ttl=120)
+def fetch_allocation_returns(weeks):
+    """Fetch returns for each allocation ETF proxy over the lookback period."""
+    etfs = [v for v in ALLOCATION_ETFS.values() if v is not None]
+    end = dt.datetime.today()
+    start = end - dt.timedelta(weeks=weeks)
+    hist = yf.download(
+        tickers=etfs, start=start, end=end,
+        auto_adjust=True, progress=False, group_by="ticker", threads=True,
+    )
+    returns = {}
+    for etf in etfs:
+        try:
+            if len(etfs) > 1:
+                series = hist[etf]["Close"] if ("Close" in hist[etf]) else hist["Close"][etf]
+            else:
+                series = hist["Close"]
+            if len(series) >= 2:
+                ret = (series.iloc[-1] / series.iloc[0] - 1)
+                if hasattr(ret, "item"):
+                    ret = ret.item()
+                returns[etf] = float(ret)
+            else:
+                returns[etf] = 0.0
+        except Exception:
+            returns[etf] = 0.0
+    return returns
+
+
+def render_sample_return(weeks):
+    """Show what $1,000 would have returned under the sample allocation."""
+    returns = fetch_allocation_returns(weeks)
+
+    rows_html = ""
+    total_return_dollars = 0.0
+    starting = 1000.0
+
+    categories = list(ALLOCATION_MODEL.keys())
+    colors = ALLOCATION_COLORS
+
+    for i, cat in enumerate(categories):
+        weight = ALLOCATION_MODEL[cat] / 100.0
+        allocated = starting * weight
+        etf = ALLOCATION_ETFS.get(cat)
+        if etf and etf in returns:
+            ret_pct = returns[etf] * 100
+            gain = allocated * returns[etf]
+        else:
+            ret_pct = 0.0
+            gain = 0.0
+        end_val = allocated + gain
+        total_return_dollars += gain
+        gc = "#22c55e" if gain >= 0 else "#ef4444"
+        etf_label = etf if etf else "Cash"
+
+        rows_html += (
+            f'<div style="display:flex;align-items:center;gap:8px;padding:6px 0;'
+            f'border-bottom:1px solid #1e293b;">'
+            f'<span style="display:inline-block;width:10px;height:10px;border-radius:3px;'
+            f'background:{colors[i]};flex-shrink:0;"></span>'
+            f'<span style="font-size:12px;color:#e2e8f0;flex:2;">{cat}</span>'
+            f'<span style="font-size:11px;color:#94a3b8;width:40px;text-align:center;">'
+            f'{etf_label}</span>'
+            f'<span style="font-size:12px;color:#94a3b8;width:60px;text-align:right;">'
+            f'${allocated:.0f}</span>'
+            f'<span style="font-size:12px;color:{gc};width:60px;text-align:right;'
+            f'font-weight:600;">{ret_pct:+.1f}%</span>'
+            f'<span style="font-size:12px;color:{gc};width:70px;text-align:right;'
+            f'font-weight:600;">${end_val:.2f}</span>'
+            f'</div>'
+        )
+
+    total_end = starting + total_return_dollars
+    total_pct = (total_return_dollars / starting) * 100
+    tc = "#22c55e" if total_return_dollars >= 0 else "#ef4444"
+
+    st.markdown(
+        f'<div style="background:#0f172a;border:1px solid #1e293b;border-radius:12px;'
+        f'padding:14px 16px;margin-top:8px;">'
+        f'<div style="font-weight:700;font-size:14px;margin-bottom:4px;">'
+        f'\U0001f4b0 Sample Return on $1,000 ({weeks}W lookback)</div>'
+        f'<div style="font-size:11px;color:#64748b;margin-bottom:10px;">'
+        f'Based on real ETF proxy returns for each allocation slice.</div>'
+        f'<div style="display:flex;gap:8px;padding:4px 0;border-bottom:1px solid #334155;'
+        f'margin-bottom:4px;font-size:10px;color:#64748b;font-weight:600;">'
+        f'<span style="width:10px;"></span>'
+        f'<span style="flex:2;">CATEGORY</span>'
+        f'<span style="width:40px;text-align:center;">ETF</span>'
+        f'<span style="width:60px;text-align:right;">INVESTED</span>'
+        f'<span style="width:60px;text-align:right;">RETURN</span>'
+        f'<span style="width:70px;text-align:right;">VALUE</span>'
+        f'</div>'
+        f'{rows_html}'
+        f'<div style="display:flex;justify-content:space-between;align-items:center;'
+        f'margin-top:10px;padding-top:8px;border-top:2px solid #334155;">'
+        f'<div style="font-weight:700;font-size:15px;">Total</div>'
+        f'<div style="text-align:right;">'
+        f'<span style="font-size:18px;font-weight:700;color:{tc};">'
+        f'${total_end:,.2f}</span>'
+        f'<span style="font-size:12px;color:{tc};margin-left:8px;">'
+        f'({total_pct:+.2f}%)</span>'
+        f'</div></div></div>',
         unsafe_allow_html=True,
     )
 
@@ -769,7 +960,7 @@ def main():
     # 3. Legend
     render_legend()
 
-    # 4. Pie chart + Top 10 ETFs
+    # 4. Pie chart + sample return + Top 10 ETFs
     pie_col, etf_col = st.columns([1, 2])
     with pie_col:
         render_allocation_pie()
@@ -816,6 +1007,17 @@ def main():
 
     blue, under, bullish, bearish = classify_groups(df)
     wl_df = df[df["ticker"].isin(st.session_state.watchlist)].copy()
+
+    # --- Sample $1,000 return (below pie chart area) ---
+    render_sample_return(weeks)
+
+    st.markdown("---")
+
+    # --- Buy / Sell signals ---
+    st.markdown("#### \U0001f4e2 Buy & Sell Signals")
+    render_buy_sell_signals(df, weeks)
+
+    # --- Overall sentiment bar ---
     overall = compute_overall_sentiment(df)
     overall_bar(overall, weeks)
 
