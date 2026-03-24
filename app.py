@@ -772,18 +772,24 @@ def main():
     overall = compute_overall_sentiment(df)
     overall_bar(overall, weeks)
 
-    col1, col2, col3, col4, col5 = st.columns(5)
-    with col1:
+    # Row 1: Blue Chips, Underperformers, Most Bullish
+    r1c1, r1c2, r1c3 = st.columns(3)
+    with r1c1:
         render_group("Blue Chips (10)", blue, weeks)
-    with col2:
+    with r1c2:
         render_group("Underperformers", under, weeks)
-    with col3:
+    with r1c3:
         render_group("Most Bullish", bullish, weeks)
-    with col4:
+
+    # Row 2: Most Bearish, Watchlist
+    r2c1, r2c2, r2c3 = st.columns(3)
+    with r2c1:
         render_group("Most Bearish", bearish, weeks)
-    with col5:
+    with r2c2:
         wl_df = df[df["ticker"].isin(st.session_state.watchlist)].copy()
         render_group("Watchlist", wl_df, weeks)
+    with r2c3:
+        st.empty()
 
     with st.expander("Show raw data"):
         st.dataframe(df.sort_values("ticker").reset_index(drop=True))
