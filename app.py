@@ -283,20 +283,56 @@ def render_legend():
 
 
 # ============================================================
-# PIE CHART
+# PIE CHART (DYNAMIC - PERFORMANCE WEIGHTED)
 # ============================================================
 
-def render_allocation_pie():
+def compute_optimal_weights(returns_dict):
+    """Weight categories by relative performance. Best performers get more.
+    Uses softmax-style weighting on returns so all slices stay > 0."""
     categories = list(ALLOCATION_MODEL.keys())
-    values = list(ALLOCATION_MODEL.values())
+    raw_returns = []
+    for cat in categories:
+        etf = ALLOCATION_ETFS.get(cat)
+        if etf and etf in returns_dict:
+            raw_returns.append(returns_dict[etf])
+        else:
+            raw_returns.append(0.0)
+
+    # Shift returns so the worst is at 0, then add a floor so no slice vanishes
+    min_r = min(raw_returns)
+    shifted = [r - min_r + 0.01 for r in raw_returns]
+    total = sum(shifted)
+    if total == 0:
+        # fallback to equal weight
+        return {cat: round(100 / len(categories)) for cat in categories}
+
+    weights = {}
+    for cat, s in zip(categories, shifted):
+        weights[cat] = round((s / total) * 100, 1)
+
+    # Normalize rounding to sum to 100
+    diff = 100.0 - sum(weights.values())
+    first_cat = categories[0]
+    weights[first_cat] = round(weights[first_cat] + diff, 1)
+
+    return weights
+
+
+def render_allocation_pie(weights, weeks):
+    categories = list(weights.keys())
+    values = list(weights.values())
     colors = ALLOCATION_COLORS
     total = sum(values)
+    if total == 0:
+        total = 1
 
     slices = ""
     legend = ""
     cum = 0
 
     for i, (cat, val) in enumerate(zip(categories, values)):
+        if val <= 0:
+            continue
         sa = (cum / total) * 360
         ea = ((cum + val) / total) * 360
         cum += val
@@ -311,31 +347,34 @@ def render_allocation_pie():
             f'<path d="M100,100 L{x1:.1f},{y1:.1f} A80,80 0 {la},1 '
             f'{x2:.1f},{y2:.1f} Z" fill="{colors[i]}" stroke="#1e293b" stroke-width="1"/>'
         )
+        etf = ALLOCATION_ETFS.get(cat)
+        etf_label = f" ({etf})" if etf else ""
         legend += (
             f'<div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">'
             f'<span style="display:inline-block;width:12px;height:12px;border-radius:3px;'
             f'background:{colors[i]};flex-shrink:0;"></span>'
-            f'<span style="font-size:12px;color:#e2e8f0;">{cat}</span>'
+            f'<span style="font-size:12px;color:#e2e8f0;">{cat}'
+            f'<span style="color:#64748b;">{etf_label}</span></span>'
             f'<span style="font-size:12px;color:#94a3b8;margin-left:auto;'
-            f'font-weight:600;">{val}%</span></div>'
+            f'font-weight:600;">{val:.1f}%</span></div>'
         )
 
     st.markdown(
         f'<div style="background:#0f172a;border:1px solid #1e293b;border-radius:16px;'
         f'padding:16px;margin-bottom:16px;">'
         f'<div style="font-weight:700;font-size:15px;margin-bottom:4px;">'
-        f'\U0001f4ca Sample Portfolio Allocation</div>'
+        f'\U0001f4ca Optimal Allocation ({weeks}W Performance Weighted)</div>'
         f'<div style="font-size:11px;color:#64748b;margin-bottom:12px;">'
-        f'\u26a0\ufe0f Educational reference only \u2014 NOT financial advice. '
-        f'Consult a licensed advisor.</div>'
+        f'\u26a0\ufe0f Weights shift toward best-performing categories. '
+        f'Educational only \u2014 NOT financial advice.</div>'
         f'<div style="display:flex;align-items:center;gap:24px;flex-wrap:wrap;">'
         f'<div><svg width="200" height="200" viewBox="0 0 200 200">'
         f'{slices}'
         f'<circle cx="100" cy="100" r="40" fill="#0f172a"/>'
         f'<text x="100" y="96" text-anchor="middle" fill="#e2e8f0" '
-        f'font-size="11" font-weight="600">Diversified</text>'
+        f'font-size="10" font-weight="600">Performance</text>'
         f'<text x="100" y="112" text-anchor="middle" fill="#94a3b8" '
-        f'font-size="10">Portfolio</text></svg></div>'
+        f'font-size="10">Weighted</text></svg></div>'
         f'<div style="flex:1;min-width:180px;">{legend}</div>'
         f'</div></div>',
         unsafe_allow_html=True,
@@ -446,19 +485,19 @@ def fetch_allocation_returns(weeks):
     return returns
 
 
-def render_sample_return(weeks):
-    """Show what $1,000 would have returned under the sample allocation."""
+def render_sample_return(weeks, weights):
+    """Show what $1,000 would have returned under the given allocation weights."""
     returns = fetch_allocation_returns(weeks)
 
     rows_html = ""
     total_return_dollars = 0.0
     starting = 1000.0
 
-    categories = list(ALLOCATION_MODEL.keys())
+    categories = list(weights.keys())
     colors = ALLOCATION_COLORS
 
     for i, cat in enumerate(categories):
-        weight = ALLOCATION_MODEL[cat] / 100.0
+        weight = weights[cat] / 100.0
         allocated = starting * weight
         etf = ALLOCATION_ETFS.get(cat)
         if etf and etf in returns:
@@ -957,19 +996,7 @@ def main():
     # 2. Major Indexes row
     render_index_row()
 
-    # 3. Legend
-    render_legend()
-
-    # 4. Pie chart + sample return + Top 10 ETFs
-    pie_col, etf_col = st.columns([1, 2])
-    with pie_col:
-        render_allocation_pie()
-    with etf_col:
-        render_etf_section()
-
-    st.markdown("---")
-
-    # Sidebar
+    # --- Sidebar (defined early so `weeks` is available everywhere) ---
     with st.sidebar:
         st.header("Controls")
         weeks = st.slider("Lookback (weeks)", 1, 52, value=DEFAULT_LOOKBACK_WEEKS)
@@ -999,6 +1026,23 @@ def main():
         fetch_stock_info.clear()
         fetch_index_data.clear()
         fetch_etf_data.clear()
+        fetch_allocation_returns.clear()
+
+    # 3. Legend
+    render_legend()
+
+    # 4. Compute optimal weights from real returns, then render pie + return
+    alloc_returns = fetch_allocation_returns(weeks)
+    optimal_weights = compute_optimal_weights(alloc_returns)
+
+    pie_col, etf_col = st.columns([1, 2])
+    with pie_col:
+        render_allocation_pie(optimal_weights, weeks)
+        render_sample_return(weeks, optimal_weights)
+    with etf_col:
+        render_etf_section()
+
+    st.markdown("---")
 
     with st.spinner("Loading stock data from Yahoo Finance..."):
         df, hist = build_universe_df(
@@ -1007,11 +1051,6 @@ def main():
 
     blue, under, bullish, bearish = classify_groups(df)
     wl_df = df[df["ticker"].isin(st.session_state.watchlist)].copy()
-
-    # --- Sample $1,000 return (below pie chart area) ---
-    render_sample_return(weeks)
-
-    st.markdown("---")
 
     # --- Buy / Sell signals ---
     st.markdown("#### \U0001f4e2 Buy & Sell Signals")
