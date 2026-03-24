@@ -95,11 +95,11 @@ def compute_return_and_sentiment(hist, tickers):
         rows.append({"ticker": t, "change_pct": ret_pct, "sentiment": sent})
     return pd.DataFrame(rows)
 
-def build_universe_df(extra_watchlist=None):
+def build_universe_df(extra_watchlist=None, months=3):
     if extra_watchlist is None:
         extra_watchlist = []
     tickers = sorted(set(UNIVERSE_TICKERS + extra_watchlist))
-    hist = fetch_stock_history(tickers, months=LOOKBACK_MONTHS)
+    hist = fetch_stock_history(tickers, months=months)
     info_df = fetch_stock_info(tickers)
     perf_df = compute_return_and_sentiment(hist, tickers)
     df = info_df.merge(perf_df, on="ticker", how="left")
@@ -263,16 +263,12 @@ def main():
                         x for x in st.session_state.watchlist if x != remove_sym
                     ]
 
-    # Allow user to adjust lookback
-    global LOOKBACK_MONTHS
-    LOOKBACK_MONTHS = months
-
     if refresh:
         fetch_stock_history.clear()
         fetch_stock_info.clear()
 
     with st.spinner("Loading data from Yahoo Finance..."):
-        df = build_universe_df(extra_watchlist=st.session_state.watchlist)
+        df = build_universe_df(extra_watchlist=st.session_state.watchlist, months=months)
 
     blue, under, bullish, bearish = classify_groups(df)
     overall = compute_overall_sentiment(df)
