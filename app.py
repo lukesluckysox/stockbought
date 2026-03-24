@@ -611,19 +611,32 @@ def overall_bar(sent_0_100, weeks):
     )
 
 
-def render_tile(row, weeks):
+def _format_price(price):
+    if price is not None and not (isinstance(price, float) and math.isnan(price)):
+        return f"${price:.2f}"
+    return "N/A"
+
+
+def render_clickable_tile(row, weeks, unique_key):
+    """Render a ticker tile as a clickable selectbox-style element."""
     score = row["sentiment"]
     bg = sentiment_color(score)
     label = sentiment_label(score)
     change = row["change_pct"]
-    price = row["price"]
     ticker = row["ticker"]
-    ps = f"${price:.2f}" if price is not None and not (isinstance(price, float) and math.isnan(price)) else "N/A"
+    ps = _format_price(row["price"])
     cc = "#22c55e" if change >= 0 else "#ef4444"
 
+    # Use a container + button styled to look like the full tile
+    clicked = st.button(
+        f"{ticker}  |  {row['name']}  |  {ps}  |  {change:+.2f}% ({weeks}W)  |  {label}",
+        key=unique_key,
+        use_container_width=True,
+    )
+    # Also render the styled visual tile above the button area
     st.markdown(
-        f'<div style="border-radius:12px;padding:10px 12px;margin-bottom:8px;'
-        f'background-color:#111827;border:1px solid #1f2937;">'
+        f'<div style="border-radius:12px;padding:10px 12px;margin-top:-52px;margin-bottom:8px;'
+        f'background-color:#111827;border:1px solid #1f2937;pointer-events:none;position:relative;z-index:1;">'
         f'<div style="display:flex;justify-content:space-between;align-items:center;">'
         f'<div>'
         f'<div style="font-weight:600;font-size:14px;">{ticker}</div>'
@@ -638,18 +651,55 @@ def render_tile(row, weeks):
         f'</div></div>',
         unsafe_allow_html=True,
     )
-    if st.button("\U0001f4c8 Chart", key=f"chart_{ticker}"):
-        st.session_state.selected_ticker = ticker
-        st.rerun()
+    return clicked
 
 
-def render_group(title, df_group, weeks):
-    st.subheader(title)
-    if df_group.empty:
-        st.write("No data.")
-        return
-    for _, row in df_group.iterrows():
-        render_tile(row, weeks)
+def render_highlight_tile(row, weeks, category_label):
+    """Render a prominent highlight card for the #1 in each category."""
+    score = row["sentiment"]
+    bg = sentiment_color(score)
+    label = sentiment_label(score)
+    change = row["change_pct"]
+    ticker = row["ticker"]
+    ps = _format_price(row["price"])
+    cc = "#22c55e" if change >= 0 else "#ef4444"
+
+    st.markdown(
+        f'<div style="background:#0f172a;border:1px solid #1e293b;border-radius:12px;'
+        f'padding:12px 16px;">'
+        f'<div style="font-size:11px;color:#64748b;font-weight:600;'
+        f'text-transform:uppercase;letter-spacing:0.5px;margin-bottom:6px;">'
+        f'\U0001f3c6 Top {category_label}</div>'
+        f'<div style="display:flex;justify-content:space-between;align-items:center;">'
+        f'<div>'
+        f'<div style="font-weight:700;font-size:18px;">{ticker}</div>'
+        f'<div style="font-size:12px;color:#94a3b8;">{row["name"]}</div></div>'
+        f'<div style="text-align:right;">'
+        f'<div style="font-weight:700;font-size:18px;">{ps}</div>'
+        f'<div style="font-size:13px;color:{cc};font-weight:600;">{change:+.2f}% ({weeks}W)</div>'
+        f'</div></div>'
+        f'<div style="margin-top:6px;">'
+        f'<span style="padding:3px 8px;border-radius:999px;background-color:{bg};'
+        f'color:white;font-size:12px;font-weight:600;">{label} ({score:+.2f})</span>'
+        f'</div></div>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_expandable_group(title, df_group, weeks, group_key):
+    """Render a group as an expandable section, max 10 tickers, clickable tiles."""
+    limited = df_group.head(10)
+    count = len(limited)
+    with st.expander(f"{title} ({count})", expanded=False):
+        if limited.empty:
+            st.write("No data.")
+            return
+        for i, (_, row) in enumerate(limited.iterrows()):
+            ukey = f"tile_{group_key}_{row['ticker']}_{i}"
+            clicked = render_clickable_tile(row, weeks, ukey)
+            if clicked:
+                st.session_state.selected_ticker = row["ticker"]
+                st.rerun()
 
 
 def render_chart_dialog(hist, df, weeks):
@@ -661,8 +711,7 @@ def render_chart_dialog(hist, df, weeks):
         st.session_state.selected_ticker = None
         return
     r = r.iloc[0]
-    price = r["price"]
-    ps = f"${price:.2f}" if price is not None and not (isinstance(price, float) and math.isnan(price)) else "N/A"
+    ps = _format_price(r["price"])
     cc = "#22c55e" if r["change_pct"] >= 0 else "#ef4444"
     try:
         series = hist[ticker]["Close"] if ("Close" in hist[ticker]) else hist["Close"][ticker]
@@ -765,31 +814,50 @@ def main():
             extra_watchlist=st.session_state.watchlist, weeks=weeks
         )
 
-    if st.session_state.selected_ticker:
-        render_chart_dialog(hist, df, weeks)
-
     blue, under, bullish, bearish = classify_groups(df)
+    wl_df = df[df["ticker"].isin(st.session_state.watchlist)].copy()
     overall = compute_overall_sentiment(df)
     overall_bar(overall, weeks)
 
-    # Row 1: Blue Chips, Underperformers, Most Bullish
-    r1c1, r1c2, r1c3 = st.columns(3)
-    with r1c1:
-        render_group("Blue Chips (10)", blue, weeks)
-    with r1c2:
-        render_group("Underperformers", under, weeks)
-    with r1c3:
-        render_group("Most Bullish", bullish, weeks)
+    # --- Top #1 from each category as permanent highlight cards ---
+    st.markdown("#### \U0001f451 Category Leaders")
+    h1, h2, h3, h4, h5 = st.columns(5)
+    with h1:
+        if not blue.empty:
+            render_highlight_tile(blue.iloc[0], weeks, "Blue Chip")
+    with h2:
+        if not under.empty:
+            render_highlight_tile(under.iloc[0], weeks, "Underperformer")
+    with h3:
+        if not bullish.empty:
+            render_highlight_tile(bullish.iloc[0], weeks, "Bullish")
+    with h4:
+        if not bearish.empty:
+            render_highlight_tile(bearish.iloc[0], weeks, "Bearish")
+    with h5:
+        if not wl_df.empty:
+            render_highlight_tile(wl_df.iloc[0], weeks, "Watchlist")
+        else:
+            st.markdown(
+                '<div style="background:#0f172a;border:1px solid #1e293b;'
+                'border-radius:12px;padding:12px 16px;text-align:center;'
+                'color:#64748b;font-size:13px;">'
+                'Add tickers to your watchlist via the sidebar</div>',
+                unsafe_allow_html=True,
+            )
 
-    # Row 2: Most Bearish, Watchlist
-    r2c1, r2c2, r2c3 = st.columns(3)
-    with r2c1:
-        render_group("Most Bearish", bearish, weeks)
-    with r2c2:
-        wl_df = df[df["ticker"].isin(st.session_state.watchlist)].copy()
-        render_group("Watchlist", wl_df, weeks)
-    with r2c3:
-        st.empty()
+    st.markdown("")
+
+    # --- Chart dialog (if a ticker is selected) ---
+    if st.session_state.selected_ticker:
+        render_chart_dialog(hist, df, weeks)
+
+    # --- Expandable groups (click any tile to see chart) ---
+    render_expandable_group("Blue Chips", blue, weeks, "blue")
+    render_expandable_group("Underperformers", under, weeks, "under")
+    render_expandable_group("Most Bullish", bullish, weeks, "bullish")
+    render_expandable_group("Most Bearish", bearish, weeks, "bearish")
+    render_expandable_group("Watchlist", wl_df, weeks, "watchlist")
 
     with st.expander("Show raw data"):
         st.dataframe(df.sort_values("ticker").reset_index(drop=True))
