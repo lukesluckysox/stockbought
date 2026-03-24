@@ -1,3 +1,4 @@
 streamlit>=1.30.0
 pandas>=2.0.0
 yfinance>=0.2.30
+streamlit-autorefresh>=1.0.1
